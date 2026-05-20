@@ -188,6 +188,8 @@ class Domain1D(BaseDomain):
         Physical length of the domain.
     dx : float
         Grid spacing.
+    material : float, default=1.0
+        Default reflection coefficient for all boundaries.
     
     Attributes
     ----------
@@ -195,17 +197,70 @@ class Domain1D(BaseDomain):
         1D array of grid point positions.
     grids : tuple
         Tuple containing the x coordinate array.
+    materials : np.ndarray
+        Reflection coefficient map for boundary absorption.
     """
 
-    def __init__(self, length: float, dx: float) -> None:
+    def __init__(self, length: float, dx: float, material: float = 1.0) -> None:
         super().__init__(length, dx)
         
         self.x = np.linspace(0, self.L[0], self.N[0])
         self.grids = (self.x,)
         
+        self.materials = np.full(self.N[0], material)
+        
         self.mask = np.ones(self.N[0], dtype=bool)
         self.update_boundaries()
 
+    def set_material(self, mask_condition: np.ndarray, material: float) -> None:
+        """
+        Set reflection coefficient for a region of the domain.
+        
+        Parameters
+        ----------
+        mask_condition : np.ndarray
+            Boolean mask selecting the region.
+        material : float
+            Reflection coefficient R (0 = fully absorbing, 1 = fully reflective).
+        """
+        self.materials[mask_condition] = material
+
+    def preview(self) -> None:
+        """
+        Visualize the 1D domain setup.
+        
+        Displays a horizontal strip coloured by wall reflection coefficient,
+        with vertical markers for registered sources and listeners.
+        """
+        fig, ax = plt.subplots(figsize=(8, 2))
+
+        visual_map = self.materials.copy().astype(float)
+        visual_map[self.mask] = np.nan
+
+        im = ax.imshow(
+            visual_map[np.newaxis, :],
+            aspect='auto',
+            origin='lower',
+            cmap='inferno',
+            extent=[0, self.L[0], -0.5, 0.5],
+            vmin=0, vmax=1
+        )
+        fig.colorbar(im, ax=ax, label="Wall Reflection Coeff (R)")
+
+        for i, s in enumerate(self.sources):
+            ax.axvline(s.pos[0], color='red', linewidth=2, linestyle='--',
+                       label='Source' if i == 0 else None)
+
+        for j, l in enumerate(self.listeners):
+            ax.axvline(l.pos[0], color='lime', linewidth=2, linestyle=':',
+                       label='Mic' if j == 0 else None)
+
+        ax.set_title("Domain Preview: Geometry & Setup")
+        ax.set_xlabel("X [m]")
+        ax.set_yticks([])
+        ax.legend(loc='upper right')
+        plt.tight_layout()
+        plt.show()
 
 class Domain2D(BaseDomain):
     """
@@ -306,65 +361,6 @@ class Domain2D(BaseDomain):
         is_outside = (dist_sq > radius**2)
         self.mask[is_outside] = False
         self.update_boundaries()
-
-    # def add_smart_speaker(
-    #     self, 
-    #     center: List[float], 
-    #     source, 
-    #     inner_size: List[float] = [1.0, 1.0], 
-    #     wall_width: float = 0.1
-    # ) -> None:
-    #     """
-    #     Add a U-shaped speaker enclosure with a source inside.
-        
-    #     Creates a three-walled enclosure (back, left, right) with the
-    #     source positioned at the opening. Walls are set to fully reflective.
-        
-    #     Parameters
-    #     ----------
-    #     center : list of float
-    #         Center position [x, y] of the speaker.
-    #     source : HarmonicSource or RickerSource
-    #         Source to place inside the enclosure.
-    #     inner_size : list of float, default=[1.0, 1.0]
-    #         Interior dimensions [width, height].
-    #     wall_width : float, default=0.1
-    #         Thickness of the enclosure walls.
-    #     """
-    #     cx, cy = center
-    #     w_in, h_in = inner_size
-    #     t = wall_width
-        
-    #     back_size = [w_in + 2*t, t]
-    #     back_pos  = [cx, cy - h_in/2 - t/2]
-        
-    #     left_size = [t, h_in]
-    #     left_pos  = [cx - w_in/2 - t/2, cy]
-        
-    #     right_size = [t, h_in]
-    #     right_pos  = [cx + w_in/2 + t/2, cy]
-        
-    #     self.add_rectangular_obstacle(back_pos, back_size)
-    #     self.add_rectangular_obstacle(left_pos, left_size)
-    #     self.add_rectangular_obstacle(right_pos, right_size)
-        
-    #     X, Y = self.grids
-        
-    #     def get_mask(p, s):
-    #         return (
-    #             (X >= p[0] - s[0]/2) & (X <= p[0] + s[0]/2) & 
-    #             (Y >= p[1] - s[1]/2) & (Y <= p[1] + s[1]/2)
-    #         )
-
-    #     speaker_mask = (get_mask(back_pos, back_size) | 
-    #                     get_mask(left_pos, left_size) | 
-    #                     get_mask(right_pos, right_size))
-        
-    #     self.materials[speaker_mask] = 1.0
-        
-    #     self.add_source(source)
-    #     print(f"✅ Smart Speaker added at {center}")
-        
 
     def preview(self) -> None:
         """

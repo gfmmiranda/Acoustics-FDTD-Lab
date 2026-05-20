@@ -1,68 +1,64 @@
-from typing import Callable
+from typing import Callable, List
 import numpy as np
 from scipy.signal import find_peaks
 
 
-def get_normal_mode_dirichlet(
-    n: int,
-    m: int,
-    Lx: float,
-    Ly: float
-) -> Callable[[np.ndarray, np.ndarray], np.ndarray]:
+def get_normal_mode_dirichlet(modes: List[int], domain) -> Callable[..., np.ndarray]:
     """
-    Generate Dirichlet normal mode shape for a rectangular domain.
-    
+    Return a Dirichlet normal mode function for a rectangular domain.
+
+    The returned callable computes the product of sin(nᵢ·π·xᵢ / Lᵢ)
+    over all dimensions. Works for any number of dimensions.
+
     Parameters
     ----------
-    n : int
-        Mode number in x-direction.
-    m : int
-        Mode number in y-direction.
-    Lx : float
-        Domain length in x.
-    Ly : float
-        Domain length in y.
-    
+    modes : list of int
+        Mode number for each dimension, e.g. [n] for 1D or [n, m] for 2D.
+    domain : Domain1D or Domain2D
+        Computational domain providing physical lengths.
+
     Returns
     -------
     callable
-        Function computing sin(nπx/Lx) * sin(mπy/Ly).
+        Function (*grids) -> np.ndarray, compatible with Wave/Heat solvers.
     """
-    def displacement(x: np.ndarray, y: np.ndarray) -> np.ndarray:
-        return np.sin(n * np.pi * x / Lx) * np.sin(m * np.pi * y / Ly)
-    
-    return displacement
+    L = domain.L
+    def field(*grids: np.ndarray) -> np.ndarray:
+        result = np.ones_like(grids[0], dtype=float)
+        for grid, Li, n in zip(grids, L, modes):
+            result = result * np.sin(n * np.pi * grid / Li)
+        return result
+    return field
 
 
-def get_normal_mode_neumann(
-    n: int,
-    m: int,
-    Lx: float,
-    Ly: float
-) -> Callable[[np.ndarray, np.ndarray], np.ndarray]:
+def get_normal_mode_neumann(modes: List[int], domain) -> Callable[..., np.ndarray]:
     """
-    Generate Neumann normal mode shape for a rectangular domain.
-    
+    Return a Neumann normal mode function for a rectangular domain.
+
+    The returned callable computes the product of cos(nᵢ·π·xᵢ / Lᵢ)
+    over all dimensions. Works for any number of dimensions.
+
     Parameters
     ----------
-    n : int
-        Mode number in x-direction.
-    m : int
-        Mode number in y-direction.
-    Lx : float
-        Domain length in x.
-    Ly : float
-        Domain length in y.
-    
+    modes : list of int
+        Mode number for each dimension, e.g. [n] for 1D or [n, m] for 2D.
+    domain : Domain1D or Domain2D
+        Computational domain providing physical lengths.
+
     Returns
     -------
     callable
-        Function computing cos(nπx/Lx) * cos(mπy/Ly).
+        Function (*grids) -> np.ndarray, compatible with Wave/Heat solvers.
     """
-    def displacement(x: np.ndarray, y: np.ndarray) -> np.ndarray:
-        return np.cos(n * np.pi * x / Lx) * np.cos(m * np.pi * y / Ly)
-    
-    return displacement
+    L = domain.L
+    def field(*grids: np.ndarray) -> np.ndarray:
+        result = np.ones_like(grids[0], dtype=float)
+        for grid, Li, n in zip(grids, L, modes):
+            if n == 0:
+                continue  # mode 0 = no modulation in this dimension
+            result = result * np.cos(n * np.pi * grid / Li)
+        return result
+    return field
 
 
 def get_initial_gaussian(

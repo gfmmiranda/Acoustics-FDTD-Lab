@@ -55,12 +55,17 @@ class Wave(PDESolver):
     def __init__(
         self,
         domain: BaseDomain,
-        initial_u: Callable[..., np.ndarray] = lambda x, y: np.zeros_like(x),
-        initial_ut: Callable[..., np.ndarray] = lambda x, y: np.zeros_like(x),
+        initial_u: Optional[Callable[..., np.ndarray]] = None,
+        initial_ut: Optional[Callable[..., np.ndarray]] = None,
         dt: Optional[float] = None,
         c: float = 1.0,
         boundary_type: str = 'dirichlet'
     ) -> None:
+        
+        if initial_u is None:
+            initial_u = lambda *args: np.zeros_like(args[0])
+        if initial_ut is None:
+            initial_ut = lambda *args: np.zeros_like(args[0])
         
         has_absorption = np.any(domain.materials < 1.0)
         
@@ -94,8 +99,45 @@ class Wave(PDESolver):
 
         self.apply_boundary_conditions(self.u_prev)
         self.apply_boundary_conditions(self.u_curr)
-
+    
     def apply_boundary_conditions(self, u: np.ndarray) -> None:
+        """
+        Apply acoustic boundary conditions with spatially-varying absorption.
+        
+        Parameters
+        ----------
+        u : np.ndarray
+            Displacement field to modify in-place.
+        
+        Notes
+        -----
+        For each boundary point, the update interpolates between:
+        - Hard wall (R=1): 1st-order Neumann 
+        - Absorbing (R=0): 1st-order Mur absorbing boundary condition
+        
+        The reflection coefficient R controls the mix: u = R*u_hard + (1-R)*u_absorb
+        """
+        u[~self.domain.mask] = 0.0
+
+        for (wall_idx, air_idx, dn, R) in self.boundary_physics_map:
+            dt = self.dt
+            c = self.c
+            lam = (c * dt) / dn
+            
+            u_wall_n   = self.u_curr[wall_idx]
+            u_air_n    = self.u_curr[air_idx]
+            u_air_next = u[air_idx]
+
+            # Mur 1st-order absorbing boundary
+            coeff_absorb = (lam - 1.0) / (lam + 1.0)
+            val_absorb = u_air_n + coeff_absorb * (u_air_next - u_wall_n)
+            
+            # 1st-Order Neumann (hard wall)
+            val_hard = u_air_next
+
+            u[wall_idx] = R * val_hard + (1.0 - R) * val_absorb
+    
+    def apply_boundary_conditions_old(self, u: np.ndarray) -> None:
         """
         Apply acoustic boundary conditions with spatially-varying absorption.
         

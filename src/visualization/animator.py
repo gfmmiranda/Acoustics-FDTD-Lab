@@ -127,11 +127,14 @@ class PhysicsAnimator:
         print(f'Animating {len(display_data)} frames (Spatial stride: {skip_spatial})...')
 
         def process(frame: np.ndarray) -> np.ndarray:
+            if self.solver.domain.ndim == 1:
+                return frame[s_slice]
             return frame.T[s_slice, s_slice]
 
         if self.solver.domain.ndim == 1:
+            x_plot_1d = self.x_axis[s_slice]
             initial_data.append(go.Scatter(
-                x=self.x_axis, y=process(display_data[0]), mode="lines", name="Wave",
+                x=x_plot_1d, y=process(display_data[0]), mode="lines", name="Wave",
                 line=dict(color='royalblue', width=2)
             ))
             
@@ -151,10 +154,10 @@ class PhysicsAnimator:
             )
 
             for i, raw_frame in enumerate(display_data):
-                frame_data = [go.Scatter(y=process(raw_frame))]
+                frame_data = [go.Scatter(x=x_plot_1d, y=process(raw_frame))]
                 if has_listeners:
                     l_y_new = [raw_frame[l.grid_idx] for l in listeners]
-                    frame_data.append(go.Scatter(y=l_y_new))
+                    frame_data.append(go.Scatter(x=l_x, y=l_y_new))
                 frames.append(go.Frame(data=frame_data, name=f"f{i}"))
 
         elif self.solver.domain.ndim == 2:
