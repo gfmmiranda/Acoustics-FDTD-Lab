@@ -196,14 +196,21 @@ class Wave(PDESolver):
 
     def step(self) -> None:
         """
-        Advance solution by one time step using leapfrog scheme.
-        
-        Computes u^{n+1} = 2u^n - u^{n-1} + (c*dt)²(∇²u + f).
-        Records field values at all registered listeners.
+        Advance solution by one time step using a leapfrog FDTD scheme.
+
+        Sources are implemented as local pressure injections added directly
+        to the next pressure field. This simplified source model is useful
+        for educational and exploratory acoustic simulations.
         """
         lap = self.laplacian(self.u_curr)
-        u_next = (2 * self.u_curr - self.u_prev + 
-                  (self.c * self.dt)**2 * (lap + self.active_source_field()))
+        source_field = self.active_source_field()
+
+        u_next = (
+            2 * self.u_curr
+            - self.u_prev
+            + (self.c * self.dt) ** 2 * lap
+            + self.dt ** 2 * source_field
+        )
 
         self.apply_boundary_conditions(u_next)
 

@@ -1,5 +1,6 @@
 from typing import Optional, Tuple, Union, List
 import numpy as np
+from scipy import signal
 
 
 class Listener:
@@ -74,7 +75,13 @@ class Listener:
         if dt <= 1e-9:
             dt = np.mean(np.diff(times))
         
-        fft_data = np.fft.rfft(signal)
+        # Remove DC offset
+        signal = signal - np.mean(signal)
+
+        # Apply Hann window to reduce spectral leakage
+        window = np.hanning(len(signal))
+        signal_windowed = signal * window
+        fft_data = np.fft.rfft(signal_windowed) 
         freqs = np.fft.rfftfreq(n, d=dt)
         
         return freqs, np.abs(fft_data)

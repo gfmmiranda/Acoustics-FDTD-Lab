@@ -97,7 +97,7 @@ class DipoleSource(HarmonicSource):
         dx = (self.sep / 2.0) * np.cos(self.theta)
         dy = (self.sep / 2.0) * np.sin(self.theta)
 
-        print(dx, dy)
+        # print(dx, dy)
         
         idx_plus = domain.physical_to_index([cx + dx, cy + dy])
         idx_minus = domain.physical_to_index([cx - dx, cy - dy])

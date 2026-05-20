@@ -181,13 +181,23 @@ class PhysicsAnimator:
                     marker=dict(color='red', size=5, symbol='circle')
                 ))
 
+            # Calculate aspect ratio from domain dimensions
+            aspect_x = self.solver.domain.L[0]
+            aspect_y = self.solver.domain.L[1]
+            aspect_norm = min(aspect_x, aspect_y)
+            aspect_ratio = dict(
+                x=aspect_x / aspect_norm,
+                y=aspect_y / aspect_norm,
+                z=0.7
+            )
+            
             layout_settings = go.Layout(
                 title=f"2D Simulation (Range: {global_min:.2e} to {global_max:.2e})",
                 scene=dict(
                     xaxis=dict(title='X'),
                     yaxis=dict(title='Y'),
                     zaxis=dict(title='Amplitude', range=z_limits),
-                    aspectratio=dict(x=1, y=1, z=0.7)
+                    aspectratio=aspect_ratio
                 ),
                 template="plotly_white"
             )
@@ -208,7 +218,9 @@ class PhysicsAnimator:
                 dict(label="▶ Play", method="animate",
                      args=[None, dict(frame=dict(duration=20, redraw=True), fromcurrent=True)]),
                 dict(label="|| Pause", method="animate",
-                     args=[[None], dict(frame=dict(duration=0, redraw=False), mode="immediate", transition=dict(duration=0))])
+                     args=[[None], dict(frame=dict(duration=0, redraw=False), mode="immediate", transition=dict(duration=0))]),
+                dict(label="⟲ Restart", method="animate",
+                     args=[["f0"], dict(frame=dict(duration=0, redraw=True), mode="immediate", transition=dict(duration=0))])
             ]
         )]
 
@@ -221,3 +233,15 @@ class PhysicsAnimator:
             print(f"Animation saved to {filename}")
         
         return fig
+
+    def reset(self) -> None:
+        """
+        Clear simulation history and reset for a fresh run.
+        
+        Clears stored snapshots and time steps, allowing you to call
+        run() again without accumulating frames. Note: This does NOT
+        reset the solver's internal state (u_curr, u_prev).
+        """
+        self.history.clear()
+        self.time_steps.clear()
+        print("Animation history cleared. You can call run() again.")
