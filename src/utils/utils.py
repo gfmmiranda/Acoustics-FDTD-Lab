@@ -30,7 +30,6 @@ def get_normal_mode_dirichlet(modes: List[int], domain) -> Callable[..., np.ndar
         return result
     return field
 
-
 def get_normal_mode_neumann(modes: List[int], domain) -> Callable[..., np.ndarray]:
     """
     Return a Neumann normal mode function for a rectangular domain.
@@ -59,7 +58,6 @@ def get_normal_mode_neumann(modes: List[int], domain) -> Callable[..., np.ndarra
             result = result * np.cos(n * np.pi * grid / Li)
         return result
     return field
-
 
 def get_initial_gaussian(
     pos: list,
@@ -90,7 +88,6 @@ def get_initial_gaussian(
 
     return displacement
 
-
 def find_first_arrival(signal: np.ndarray, threshold_ratio: float = 0.1) -> int:
     """
     Detect the first significant peak in a signal (direct sound arrival).
@@ -116,4 +113,29 @@ def find_first_arrival(signal: np.ndarray, threshold_ratio: float = 0.1) -> int:
         return peaks[0]
     else:
         return np.argmax(signal)
-
+    
+def find_all_arrivals(signal: np.ndarray, threshold_ratio: float = 0.1) -> List[int]:
+    """
+    Detect all significant peaks in a signal (direct and reflected arrivals).
+    
+    Parameters
+    ----------
+    signal : np.ndarray
+        Input time-domain signal.
+    threshold_ratio : float, default=0.1
+        Minimum peak height as fraction of global maximum.
+    
+    Returns
+    -------
+    list of int
+        Indices of all detected arrivals.
+    """
+    max_val = np.max(signal)
+    min_height = max_val * threshold_ratio
+    
+    peaks, _ = find_peaks(signal, height=min_height, distance=5)
+    
+    if len(peaks) > 0:
+        return peaks.tolist()
+    else:
+        return [np.argmax(signal)]

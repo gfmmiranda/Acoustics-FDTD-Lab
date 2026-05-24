@@ -1,6 +1,6 @@
 import numpy as np
 import matplotlib.pyplot as plt
-from src.components import Listener
+from src.components import Listener, HarmonicSource
 
 class BaseExperiment:
     """
@@ -38,7 +38,7 @@ class DirectivityExperiment(BaseExperiment):
     """
     Virtual Anechoic Chamber: Measures polar patterns.
     """
-    def __init__(self, domain, solver_class, center=None, radius=2.0, num_points=72, **solver_kwargs):
+    def __init__(self, domain, solver_class, radius=2.0, num_points=72, **solver_kwargs):
         super().__init__(domain, solver_class, **solver_kwargs)
         self.center = domain.L/2.0
         self.radius = radius
@@ -68,7 +68,6 @@ class DirectivityExperiment(BaseExperiment):
             _, signal = l.get_time_series()
             # Get steady-state peak (last 20% of signal)
             steady_state = signal[int(len(signal)*0.8):]
-            if len(steady_state) == 0: steady_state = signal # Fallback for short runs
             magnitudes.append(np.max(np.abs(steady_state)))
             
         self.results['angles'] = self.angles
@@ -76,27 +75,57 @@ class DirectivityExperiment(BaseExperiment):
         
         return self.results
 
-    def plot(self):
-        """Generates the Polar Plot."""
+    def plot(self, ax=None, label='Measured', color=None):
+        """
+        Plot the normalised polar directivity pattern.
+
+        Parameters
+        ----------
+        ax : matplotlib PolarAxes, optional
+            Existing polar axis to draw on. If None, a new figure is created.
+        label : str
+            Legend label for this pattern.
+        color : str or tuple, optional
+            Line (and fill) colour. If None, the next colour in the axes cycle is used.
+
+        Returns
+        -------
+        ax : matplotlib PolarAxes
+        """
         if 'magnitudes' not in self.results:
             self.analyze()
-            
+
         theta = np.concatenate([self.results['angles'], [self.results['angles'][0]]])
         r = np.concatenate([self.results['magnitudes'], [self.results['magnitudes'][0]]])
-        
-        # Normalize
         r_norm = r / (np.max(r) + 1e-12)
 
-        plt.figure(figsize=(8, 8))
-        ax = plt.subplot(111, projection='polar')
-        ax.plot(theta, r_norm, linewidth=2, label='Measured')
-        ax.fill(theta, r_norm, alpha=0.3)
-        
-        ax.set_theta_zero_location("E")
-        ax.set_title("Directivity Pattern", va='bottom')
-        plt.legend()
-        plt.show()
+        created = ax is None
+        if created:
+            fig = plt.figure(figsize=(8, 8))
+            ax = fig.add_subplot(111, projection='polar')
 
+        plot_kw = {'linewidth': 2, 'label': label}
+        if color is not None:
+            plot_kw['color'] = color
+
+        # Capture the colour actually used so the fill matches the line exactly.
+        line = ax.plot(theta, r_norm, **plot_kw)[0]
+        line_color = line.get_color()
+
+        # Fill only in standalone mode; overlays with multiple patterns become
+        # unreadable when fills stack up.
+        if created:
+            ax.fill(theta, r_norm, alpha=0.20, color=line_color)
+
+        ax.set_theta_zero_location('E')
+        ax.set_theta_direction(1)
+
+        if created:
+            ax.set_title('Directivity Pattern', va='bottom')
+            ax.legend()
+            plt.show()
+
+        return ax
 
 class ImpulseResponseExperiment(BaseExperiment):
     """
@@ -162,3 +191,273 @@ class ImpulseResponseExperiment(BaseExperiment):
         
         plt.tight_layout()
         plt.show()
+
+class SubwooferArrayExperiment(BaseExperiment):
+    """
+    Simulates coherent low-frequency source arrays and analyses spatial sound coverage.
+
+    Runs a harmonic steady-state simulation and computes the RMS pressure field
+    over the quasi-steady tail of the run using an online accumulator, avoiding
+    the memory cost of storing all time-step frames.
+
+    Parameters
+    ----------
+    domain : Domain2D
+        Computational domain.
+    solver_class : type
+        PDE solver class to instantiate, typically ``Wave``.
+    frequency : float
+        Source frequency in Hz.
+    sources : list of dict
+        Source configurations. Each dict must contain:
+            ``pos``       – [x, y] physical position.
+        Optional keys:
+            ``amplitude`` – float, default 1.0  (use -1.0 for polarity inversion).
+            ``phase``     – float, phase offset in radians, default 0.0.
+            ``delay``     – float, time delay in seconds (converted to phase internally).
+    steady_fraction : float, default 0.5
+        Fraction of the run over which to accumulate RMS (tail of the simulation).
+    audience_region : dict, optional
+        Rectangular region for coverage metrics:
+        ``{"x_min": ..., "x_max": ..., "y_min": ..., "y_max": ...}``
+    **solver_kwargs
+        Forwarded verbatim to the solver constructor (e.g. ``c``, ``boundary_type``).
+    """
+
+    def __init__(
+        self,
+        domain,
+        solver_class,
+        frequency,
+        sources,
+        steady_fraction=0.5,
+        audience_region=None,
+        **solver_kwargs,
+    ):
+        super().__init__(domain, solver_class, **solver_kwargs)
+        self.frequency       = frequency
+        self.sources         = sources
+        self.steady_fraction = steady_fraction
+        self.audience_region = audience_region
+        self._rms_acc        = None
+        self._rms_count      = 0
+        self._is_setup       = False
+
+    # ── Lifecycle ────────────────────────────────────────────────────────────────
+
+    def setup(self):
+        """Register HarmonicSource objects with the domain from the sources config list."""
+        self.domain.sources = []   # clear any stale sources from a previous run
+
+        for cfg in self.sources:
+            phase = cfg.get("phase", 0.0)
+            if "delay" in cfg:
+                phase -= 2.0 * np.pi * self.frequency * cfg["delay"]
+
+            src = HarmonicSource(
+                pos=cfg["pos"],
+                frequency=self.frequency,
+                amplitude=cfg.get("amplitude", 1.0),
+                phase=phase,
+            )
+            self.domain.add_source(src)
+
+        self._is_setup = True
+
+    def run(self, duration):
+        """
+        Step the solver for *duration* seconds, accumulating quasi-steady RMS.
+
+        Calls ``setup()`` automatically if not already done. Uses an online
+        running-sum accumulator so memory usage is proportional to domain size,
+        not simulation length.
+
+        Returns ``self`` to allow method chaining: ``exp.run(0.2).analyze()``.
+        """
+        if not self._is_setup:
+            self.setup()
+
+        print(f"  [{self.frequency:.0f} Hz] Simulating {duration:.3f} s...")
+        self.solver = self.SolverClass(self.domain, **self.solver_kwargs)
+
+        steps  = int(duration / self.solver.dt)
+        cutoff = int((1.0 - self.steady_fraction) * steps)
+
+        self._rms_acc   = None
+        self._rms_count = 0
+
+        for i in range(steps):
+            self.solver.step()
+            if i >= cutoff:
+                frame = np.array(self.solver.u_curr, dtype=float)
+                frame[~self.solver.domain.mask] = np.nan
+                self._rms_acc = (
+                    frame ** 2 if self._rms_acc is None else self._rms_acc + frame ** 2
+                )
+                self._rms_count += 1
+
+        print(f"  Done ({self._rms_count} steady-state frames).")
+        return self
+
+    # ── Analysis ─────────────────────────────────────────────────────────────────
+
+    def analyze(self):
+        """
+        Compute RMS map, relative dB map, and optional coverage metrics.
+
+        Populates ``self.results`` with ``rms_map``, ``level_db``, ``ref_rms``,
+        and (if ``audience_region`` is set) ``coverage``.
+
+        Returns ``self.results`` and allows method chaining.
+        """
+        if self._rms_acc is None:
+            raise RuntimeError("Call run() before analyze().")
+
+        rms_map  = np.sqrt(self._rms_acc / max(self._rms_count, 1))
+        ref      = float(np.nanmax(rms_map))
+        level_db = 20.0 * np.log10(rms_map / (ref + 1e-12) + 1e-12)
+
+        self.results["rms_map"]  = rms_map
+        self.results["level_db"] = level_db
+        self.results["ref_rms"]  = ref
+
+        if self.audience_region is not None:
+            self.results["coverage"] = self.compute_coverage_metrics(level_db)
+
+        return self
+
+    # ── Coverage ─────────────────────────────────────────────────────────────────
+
+    def _audience_mask(self):
+        r    = self.audience_region
+        X, Y = self.domain.grids
+        return (
+            (X >= r["x_min"]) & (X <= r["x_max"]) &
+            (Y >= r["y_min"]) & (Y <= r["y_max"]) &
+            self.domain.mask
+        )
+
+    def compute_coverage_metrics(self, level_db):
+        """Return uniformity statistics for the audience region as a dict."""
+        mask   = self._audience_mask()
+        values = level_db[mask]
+        values = values[~np.isnan(values)]
+        if len(values) == 0:
+            return {}
+        return {
+            "mean_db":            float(np.mean(values)),
+            "std_db":             float(np.std(values)),
+            "spread_p95_p5_db":   float(np.percentile(values, 95) - np.percentile(values, 5)),
+            "min_db":             float(np.min(values)),
+            "max_db":             float(np.max(values)),
+            "fraction_below_m6":  float(np.mean(values < -6.0)),
+            "fraction_below_m12": float(np.mean(values < -12.0)),
+        }
+
+    def print_coverage(self, label=""):
+        """Print a formatted summary of the audience-area coverage metrics."""
+        if "coverage" not in self.results:
+            if self.audience_region is not None:
+                self.analyze()
+            else:
+                print("No audience_region defined.")
+                return
+        m   = self.results["coverage"]
+        tag = f"  [{label}]" if label else ""
+        print(f"\n{'─'*44}{tag}")
+        print(f"  Mean level        : {m['mean_db']:+.1f} dB")
+        print(f"  Std deviation     : {m['std_db']:.1f} dB")
+        print(f"  P95\u2013P05 spread    : {m['spread_p95_p5_db']:.1f} dB")
+        print(f"  Min / Max         : {m['min_db']:+.1f} / {m['max_db']:+.1f} dB")
+        print(f"  Below \u22126 dB        : {m['fraction_below_m6']*100:.1f}%")
+        print(f"  Below \u221212 dB       : {m['fraction_below_m12']*100:.1f}%")
+
+    def compute_fb_ratio(self, forward_pos, backward_pos):
+        """
+        Compute the front-to-back SPL ratio between two measurement points.
+
+        Parameters
+        ----------
+        forward_pos  : [x, y]  — target 'forward' position (toward audience).
+        backward_pos : [x, y]  — target 'backward' position (toward stage).
+
+        Returns
+        -------
+        dict with keys ``forward_rms``, ``backward_rms``, ``fb_ratio_db``.
+        """
+        if "rms_map" not in self.results:
+            self.analyze()
+
+        def sample(pos):
+            ix = int(np.clip(round(pos[0] / self.domain.ds[0]), 0,
+                             self.results["rms_map"].shape[0] - 1))
+            iy = int(np.clip(round(pos[1] / self.domain.ds[1]), 0,
+                             self.results["rms_map"].shape[1] - 1))
+            return float(self.results["rms_map"][ix, iy])
+
+        fwd = sample(forward_pos)
+        bck = sample(backward_pos)
+        return {
+            "forward_rms":  fwd,
+            "backward_rms": bck,
+            "fb_ratio_db":  20.0 * np.log10((fwd + 1e-12) / (bck + 1e-12)),
+        }
+
+    # ── Visualisation ─────────────────────────────────────────────────────────────
+
+    def plot_heatmap(self, ax=None, vmin=-30, vmax=0, title=None,
+                     show_colorbar=True, show_audience=False):
+        """
+        Plot the relative-level dB heatmap of the RMS pressure field.
+
+        Parameters
+        ----------
+        ax             : matplotlib Axes, optional.  Created if None.
+        vmin, vmax     : dB colour-scale limits.
+        title          : Axes title.  Defaults to frequency label.
+        show_colorbar  : bool.
+        show_audience  : bool — overlay audience region as a dashed rectangle.
+
+        Returns
+        -------
+        (ax, im) — axes and the imshow AxesImage, for external colorbar handling.
+        """
+        if "level_db" not in self.results:
+            self.analyze()
+
+        if ax is None:
+            _, ax = plt.subplots(figsize=(10, 6))
+
+        im = ax.imshow(
+            self.results["level_db"].T,
+            origin="lower",
+            extent=[0, self.domain.L[0], 0, self.domain.L[1]],
+            cmap="viridis",
+            vmin=vmin, vmax=vmax,
+            aspect="equal",
+        )
+
+        if show_colorbar:
+            plt.colorbar(im, ax=ax, label="Relative level [dB]")
+
+        for cfg in self.sources:
+            x, y = cfg["pos"]
+            ax.plot(x, y, "r*", markersize=14,
+                    markeredgecolor="white", markeredgewidth=0.8)
+
+        if show_audience and self.audience_region is not None:
+            r    = self.audience_region
+            rect = plt.Rectangle(
+                (r["x_min"], r["y_min"]),
+                r["x_max"] - r["x_min"],
+                r["y_max"] - r["y_min"],
+                linewidth=1.5, edgecolor="white",
+                facecolor="none", linestyle="--",
+            )
+            ax.add_patch(rect)
+
+        ax.set_xlabel("X [m]")
+        ax.set_ylabel("Y [m]")
+        ax.set_title(title or f"{self.frequency:.0f} Hz \u2014 RMS level [dB]")
+
+        return ax, im

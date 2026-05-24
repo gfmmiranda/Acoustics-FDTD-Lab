@@ -328,7 +328,8 @@ class Domain2D(BaseDomain):
     def add_rectangular_obstacle(
         self, 
         pos: List[float], 
-        size: List[float]
+        size: List[float],
+        material: Optional[float] = None
     ) -> None:
         """
         Add a rectangular obstacle centered at the given position.
@@ -339,11 +340,16 @@ class Domain2D(BaseDomain):
             Center coordinates [x, y].
         size : list of float
             Obstacle dimensions [width, height].
+        material : float, optional
+            Reflection coefficient for the obstacle. If None, uses the default domain material.
         """
         x_cond = (self.X >= pos[0] - size[0]/2) & (self.X <= pos[0] + size[0]/2)
         y_cond = (self.Y >= pos[1] - size[1]/2) & (self.Y <= pos[1] + size[1]/2)
         
         self.mask[x_cond & y_cond] = False
+        if material is not None:
+            self.set_material(x_cond & y_cond, material)
+            
         self.update_boundaries()
 
     def add_circular_cavity(self, pos: List[float], radius: float) -> None:
