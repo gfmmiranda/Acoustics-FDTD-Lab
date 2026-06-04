@@ -4,7 +4,9 @@ numpy
 plotly
 pyroomacoustics
 scipy
+sounddevice
 ipykernel
 jupyter
 nbformat
 pandas
+sounddevice

@@ -1,5 +1,8 @@
 import numpy as np
 import matplotlib.pyplot as plt
+from fractions import Fraction
+from scipy.signal import fftconvolve, resample_poly
+from scipy.io import wavfile
 from src.components import Listener, HarmonicSource
 
 class BaseExperiment:
@@ -243,8 +246,6 @@ class SubwooferArrayExperiment(BaseExperiment):
         self._rms_count      = 0
         self._is_setup       = False
 
-    # ── Lifecycle ────────────────────────────────────────────────────────────────
-
     def setup(self):
         """Register HarmonicSource objects with the domain from the sources config list."""
         self.domain.sources = []   # clear any stale sources from a previous run
@@ -299,8 +300,6 @@ class SubwooferArrayExperiment(BaseExperiment):
         print(f"  Done ({self._rms_count} steady-state frames).")
         return self
 
-    # ── Analysis ─────────────────────────────────────────────────────────────────
-
     def analyze(self):
         """
         Compute RMS map, relative dB map, and optional coverage metrics.
@@ -325,8 +324,6 @@ class SubwooferArrayExperiment(BaseExperiment):
             self.results["coverage"] = self.compute_coverage_metrics(level_db)
 
         return self
-
-    # ── Coverage ─────────────────────────────────────────────────────────────────
 
     def _audience_mask(self):
         r    = self.audience_region
@@ -403,7 +400,6 @@ class SubwooferArrayExperiment(BaseExperiment):
             "fb_ratio_db":  20.0 * np.log10((fwd + 1e-12) / (bck + 1e-12)),
         }
 
-    # ── Visualisation ─────────────────────────────────────────────────────────────
 
     def plot_heatmap(self, ax=None, vmin=-30, vmax=0, title=None,
                      show_colorbar=True, show_audience=False):
@@ -461,3 +457,179 @@ class SubwooferArrayExperiment(BaseExperiment):
         ax.set_title(title or f"{self.frequency:.0f} Hz \u2014 RMS level [dB]")
 
         return ax, im
+
+
+class AuralizationExperiment:
+    """
+    Renders wet audio by convolving a dry signal with a simulated impulse response.
+
+    This class is intentionally kept separate from the solver-based experiments.
+    Use ``ImpulseResponseExperiment`` to obtain an IR, then pass it here for audio
+    rendering.
+
+    Workflow::
+
+        aur = AuralizationExperiment(
+            dry_audio=dry,
+            sample_rate=44100,
+            impulse_response=ir_results["signal"],
+            ir_sample_rate=1 / ir_exp.solver.dt,
+        )
+        wet = aur.render()
+        aur.export("wet_room.wav")
+
+    Parameters
+    ----------
+    dry_audio : array-like
+        Mono dry input signal (float64, peak-normalized to ±1).
+    sample_rate : int
+        Sample rate of ``dry_audio`` in Hz.
+    impulse_response : array-like
+        Simulated impulse response from a listener recording.
+    ir_sample_rate : float
+        Sample rate of ``impulse_response`` in Hz (typically ``1 / solver.dt``).
+    normalize_ir : bool, default True
+        Normalize the IR by RMS energy before convolution.
+    trim_ir : bool, default True
+        Trim near-silent samples from the tail of the IR.
+    """
+
+    def __init__(
+        self,
+        dry_audio,
+        sample_rate,
+        impulse_response,
+        ir_sample_rate,
+        normalize_ir=True,
+        trim_ir=True,
+    ):
+        self.dry_audio = np.asarray(dry_audio, dtype=float)
+        self.sample_rate = int(sample_rate)
+        self.impulse_response = np.asarray(impulse_response, dtype=float)
+        self.ir_sample_rate = float(ir_sample_rate)
+        self.normalize_ir = normalize_ir
+        self.trim_ir = trim_ir
+        self._ir_processed = None
+        self._wet_audio = None
+
+    def prepare_ir(self):
+        """
+        Preprocess the impulse response.
+
+        Steps applied in order:
+
+        1. Remove DC offset.
+        2. Trim near-silent tail (optional).
+        3. Resample to match ``sample_rate`` (if needed).
+        4. Normalise by RMS energy (optional).
+
+        Returns
+        -------
+        ir : np.ndarray
+            Processed impulse response at ``sample_rate``.
+        """
+        ir = self.impulse_response.copy()
+
+        # 1. Remove DC offset
+        ir = ir - np.mean(ir)
+
+        # 2. Trim near-silent tail
+        if self.trim_ir:
+            peak = np.max(np.abs(ir))
+            if peak > 0:
+                threshold = 1e-4 * peak
+                nonzero = np.where(np.abs(ir) > threshold)[0]
+                if len(nonzero) > 0:
+                    ir = ir[: nonzero[-1] + 1]
+
+        # 3. Resample to audio sample rate
+        if not np.isclose(self.ir_sample_rate, self.sample_rate, rtol=1e-3):
+            ratio = Fraction(self.sample_rate, int(self.ir_sample_rate)).limit_denominator(500)
+            ir = resample_poly(ir, ratio.numerator, ratio.denominator)
+
+        # 4. Normalise by RMS energy
+        if self.normalize_ir:
+            ir = ir / (np.sqrt(np.sum(ir ** 2)) + 1e-12)
+
+        self._ir_processed = ir
+        return ir
+
+    def render(self):
+        """
+        Convolve the dry signal with the processed IR.
+
+        Returns
+        -------
+        wet : np.ndarray
+            Peak-normalised wet output signal.
+        """
+        if self._ir_processed is None:
+            self.prepare_ir()
+
+        wet = fftconvolve(self.dry_audio, self._ir_processed, mode="full")
+        wet = wet / (np.max(np.abs(wet)) + 1e-12)
+
+        self._wet_audio = wet
+        return wet
+
+    def export(self, path):
+        """
+        Write the wet audio to a 16-bit PCM WAV file.
+
+        Parameters
+        ----------
+        path : str
+            Output file path (e.g. ``"wet_room.wav"``).
+        """
+        if self._wet_audio is None:
+            self.render()
+
+        pcm = np.int16(np.clip(self._wet_audio, -1.0, 1.0) * 32767)
+        wavfile.write(path, self.sample_rate, pcm)
+        print(f"   Exported: {path}")
+
+    def plot(self, title="Auralization"):
+        """
+        Four-panel diagnostic plot: dry waveform, processed IR, wet waveform,
+        and wet spectrogram.
+
+        Parameters
+        ----------
+        title : str
+            Figure suptitle.
+        """
+        if self._wet_audio is None:
+            self.render()
+
+        t_dry = np.arange(len(self.dry_audio)) / self.sample_rate
+        t_ir = np.arange(len(self._ir_processed)) / self.sample_rate
+        t_wet = np.arange(len(self._wet_audio)) / self.sample_rate
+
+        fig, axes = plt.subplots(2, 2, figsize=(14, 8))
+        fig.suptitle(title, fontsize=14)
+
+        axes[0, 0].plot(t_dry, self.dry_audio, lw=0.8, color="tab:blue")
+        axes[0, 0].set_title("Dry Audio (Input)")
+        axes[0, 0].set_xlabel("Time (s)")
+        axes[0, 0].set_ylabel("Amplitude")
+        axes[0, 0].grid(True, alpha=0.3)
+
+        axes[0, 1].plot(t_ir, self._ir_processed, lw=0.8, color="tab:orange")
+        axes[0, 1].set_title("Processed Impulse Response")
+        axes[0, 1].set_xlabel("Time (s)")
+        axes[0, 1].set_ylabel("Amplitude")
+        axes[0, 1].grid(True, alpha=0.3)
+
+        axes[1, 0].plot(t_wet, self._wet_audio, lw=0.8, color="tab:green")
+        axes[1, 0].set_title("Wet Audio (Output)")
+        axes[1, 0].set_xlabel("Time (s)")
+        axes[1, 0].set_ylabel("Amplitude")
+        axes[1, 0].grid(True, alpha=0.3)
+
+        axes[1, 1].specgram(self._wet_audio, Fs=self.sample_rate, cmap="viridis")
+        axes[1, 1].set_title("Wet Audio Spectrogram")
+        axes[1, 1].set_xlabel("Time (s)")
+        axes[1, 1].set_ylabel("Frequency (Hz)")
+
+        plt.tight_layout()
+        plt.show()
