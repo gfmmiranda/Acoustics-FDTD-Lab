@@ -234,6 +234,69 @@ class PhysicsAnimator:
         
         return fig
 
+    def save_gif(self, filename: str = "animation.gif", skip_frames: int = 10, fps: int = 20, dpi: int = 100) -> None:
+        """
+        Save the simulation history as a GIF file.
+
+        Parameters
+        ----------
+        filename : str
+            Output path, e.g. 'assets/img/wave.gif'.
+        skip_frames : int, default=10
+            Temporal subsampling factor.
+        fps : int, default=20
+            Frames per second in the output GIF.
+        dpi : int, default=100
+            Output resolution.
+        """
+        import matplotlib.pyplot as plt
+        import matplotlib.animation as animation
+
+        frames = self.history[::skip_frames]
+        times = self.time_steps[::skip_frames]
+
+        vmax = np.nanpercentile(np.abs(frames), 99) or 1.0
+
+        domain = self.solver.domain
+        sources = getattr(domain, 'sources', [])
+        listeners = getattr(domain, 'listeners', [])
+
+        fig, ax = plt.subplots(figsize=(6, 5))
+        im = ax.imshow(
+            frames[0].T, origin='lower', aspect='equal',
+            cmap='RdBu_r', vmin=-vmax, vmax=vmax,
+            extent=[0, domain.L[0], 0, domain.L[1]]
+        )
+        ax.set_xlabel("x (m)")
+        ax.set_ylabel("y (m)")
+        title = ax.set_title(f"t = {times[0]:.3f} s")
+        plt.colorbar(im, ax=ax, label="Pressure")
+
+        for src in sources:
+            ax.plot(src.pos[0], src.pos[1], marker='*', color='yellow',
+                    markersize=10, markeredgecolor='black', markeredgewidth=0.5,
+                    linestyle='None', label='Source', zorder=5)
+
+        for lst in listeners:
+            ax.plot(lst.pos[0], lst.pos[1], marker='v', color='cyan',
+                    markersize=7, markeredgecolor='black', markeredgewidth=0.5,
+                    linestyle='None', label='Listener', zorder=5)
+
+        if sources or listeners:
+            handles, labels = ax.get_legend_handles_labels()
+            by_label = dict(zip(labels, handles))
+            ax.legend(by_label.values(), by_label.keys(), loc='upper right', fontsize=7)
+
+        def update(i):
+            im.set_data(frames[i].T)
+            title.set_text(f"t = {times[i]:.3f} s")
+            return [im, title]
+
+        anim = animation.FuncAnimation(fig, update, frames=len(frames), interval=1000 // fps, blit=True)
+        anim.save(filename, writer="pillow", fps=fps, dpi=dpi)
+        plt.close(fig)
+        print(f"GIF saved to {filename}")
+
     def reset(self) -> None:
         """
         Clear simulation history and reset for a fresh run.

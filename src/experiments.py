@@ -408,7 +408,6 @@ class SubwooferArrayExperiment(BaseExperiment):
             "fb_ratio_db":  20.0 * np.log10((fwd + 1e-12) / (bck + 1e-12)),
         }
 
-
     def plot_heatmap(self, ax=None, vmin=-30, vmax=0, title=None,
                      show_colorbar=True, show_audience=False):
         """
@@ -466,8 +465,7 @@ class SubwooferArrayExperiment(BaseExperiment):
 
         return ax, im
 
-
-class AuralizationExperiment:
+class AuralizationExperiment(BaseExperiment):
     """
     Renders wet audio by convolving a dry signal with a simulated impulse response.
 

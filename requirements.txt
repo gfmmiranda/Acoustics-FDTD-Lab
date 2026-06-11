@@ -8,4 +8,4 @@ ipykernel
 jupyter
 nbformat
 pandas
-sounddevice
+pillow
