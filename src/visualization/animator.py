@@ -293,8 +293,24 @@ class PhysicsAnimator:
             return [im, title]
 
         anim = animation.FuncAnimation(fig, update, frames=len(frames), interval=1000 // fps, blit=True)
-        anim.save(filename, writer="pillow", fps=fps, dpi=dpi)
+        anim.save(filename, writer='pillow', fps=fps, dpi=dpi)
         plt.close(fig)
+
+        # PillowWriter may default to loop=1 (play once). Re-save with loop=0 (infinite).
+        from PIL import Image
+        img = Image.open(filename)
+        pil_frames, durations = [], []
+        try:
+            while True:
+                pil_frames.append(img.copy())
+                durations.append(img.info.get('duration', 1000 // fps))
+                img.seek(img.tell() + 1)
+        except EOFError:
+            pass
+        pil_frames[0].save(
+            filename, save_all=True, append_images=pil_frames[1:],
+            loop=0, duration=durations
+        )
         print(f"GIF saved to {filename}")
 
     def reset(self) -> None:
