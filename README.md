@@ -18,7 +18,7 @@ The notebook sequence is designed as a progression: validate the solver, introdu
 
 ---
 
-## Why This Project Matters
+## Motivation and Scope
 
 This project demonstrates a physically motivated, wave-based simulation pipeline for studying acoustic phenomena and producing band-limited auralizations from simulated impulse responses. It connects several disciplines simultaneously:
 
@@ -60,7 +60,7 @@ Notebook 00 validates the solver against analytical solutions before any other e
 
 ### Room Impulse Responses
 
-Notebook 02 uses a Ricker wavelet source and virtual microphones to extract room impulse responses under three wall conditions: fully reflective, fully absorptive, and partially absorptive. The resulting signals show clearly distinguishable direct arrivals, early reflections, and exponential decay tails. Schroeder decay curves confirm the expected reverberation behavior.
+Notebook 02 uses a Ricker wavelet source and virtual microphones to extract room impulse responses under three wall conditions: fully reflective, fully absorptive, and partially absorptive. The resulting signals show distinguishable direct arrivals, early reflections, and decay behavior consistent with the chosen boundary reflection settings. Schroeder decay curves confirm the expected reverberation behavior.
 
 <p align="center">
   <img src="assets/experiments_gallery/02_impulse_response.png" width="750">
@@ -141,7 +141,7 @@ Example audio outputs:
 # Install Git LFS (once per machine)
 git lfs install
 
-git clone https://github.com/<your-username>/Acoustics-FDTD-Lab.git
+git clone https://github.com/gfmmiranda/Acoustics-FDTD-Lab.git
 cd Acoustics-FDTD-Lab
 
 # Create and activate environment
@@ -265,7 +265,7 @@ Acoustics-FDTD-Lab/
 │   │
 │   ├── solvers/
 │   │   ├── wave.py          # FDTD wave solver (NumPy, CPU)
-│   │   ├── wave_jax.py      # FDTD wave solver (JAX, JIT-compiled, GPU-capable)
+│   │   ├── wave_jax.py      # Experimental / in-progress JAX implementation
 │   │   └── heat.py          # Heat diffusion solver
 │   │
 │   ├── components/
@@ -401,4 +401,4 @@ This simulator is designed as an educational and research-prototyping tool, not 
 
 ## Author
 
-Developed by Gabriel Fiúza as part of an ongoing transition toward computational acoustics, audio signal processing, and music technology.
+Developed by Gabriel Fiúza as part of an ongoing transition toward computational acoustics, audio signal processing, and music technology. The project is intended as both a learning laboratory and a portfolio artifact for graduate study in acoustics/audio.
