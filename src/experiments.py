@@ -4,6 +4,7 @@ from fractions import Fraction
 from scipy.signal import fftconvolve, resample_poly
 from scipy.io import wavfile
 from src.components import Listener, HarmonicSource
+from src.utils import find_first_arrival
 
 class BaseExperiment:
     """
@@ -155,6 +156,12 @@ class ImpulseResponseExperiment(BaseExperiment):
             
         times, signal = self.listener.get_time_series()
         freqs, mag = self.listener.compute_spectrum()
+
+        # Record source signal at the same time grid
+        source_signal = np.zeros_like(times)
+        if self.domain.sources:
+            src = self.domain.sources[0]
+            source_signal = np.array([src.value(t) for t in times])
         
         # Convert to dB (avoid log(0) errors)
         mag_db = 20 * np.log10(mag + 1e-12)
@@ -164,6 +171,7 @@ class ImpulseResponseExperiment(BaseExperiment):
         
         self.results['times'] = times
         self.results['signal'] = signal
+        self.results['source_signal'] = source_signal
         self.results['freqs'] = freqs
         self.results['mag_db'] = mag_db
         
@@ -492,6 +500,21 @@ class AuralizationExperiment:
         Normalize the IR by RMS energy before convolution.
     trim_ir : bool, default True
         Trim near-silent samples from the tail of the IR.
+    align_ir : bool, default True
+        Trim leading silence/source delay before the first significant arrival.
+    alignment_threshold : float, default 0.01
+        Detection threshold as a fraction of the signal peak (passed to
+        ``find_first_arrival`` as ``threshold_ratio``).
+    pre_delay_ms : float, default 2.0
+        Milliseconds of signal to retain before the detected first arrival.
+    source_signal : array-like or None, default None
+        Source excitation signal at ``ir_sample_rate``.  Required when
+        ``deconvolve_ir=True``.
+    deconvolve_ir : bool, default False
+        Estimate the room impulse response by deconvolving the source wavelet
+        before further preprocessing.  Requires ``source_signal``.
+    deconvolution_reg : float, default 1e-4
+        Regularisation factor for the Wiener deconvolution.
     """
 
     def __init__(
@@ -502,6 +525,12 @@ class AuralizationExperiment:
         ir_sample_rate,
         normalize_ir=True,
         trim_ir=True,
+        align_ir=True,
+        alignment_threshold=0.01,
+        pre_delay_ms=2.0,
+        source_signal=None,
+        deconvolve_ir=False,
+        deconvolution_reg=1e-4,
     ):
         self.dry_audio = np.asarray(dry_audio, dtype=float)
         self.sample_rate = int(sample_rate)
@@ -509,6 +538,13 @@ class AuralizationExperiment:
         self.ir_sample_rate = float(ir_sample_rate)
         self.normalize_ir = normalize_ir
         self.trim_ir = trim_ir
+        self.align_ir = align_ir
+        self.alignment_threshold = alignment_threshold
+        self.pre_delay_ms = pre_delay_ms
+        self.source_signal = None if source_signal is None else np.asarray(source_signal, dtype=float)
+        self.deconvolve_ir = deconvolve_ir
+        self.deconvolution_reg = deconvolution_reg
+        self.ir_trim_time = 0.0
         self._ir_processed = None
         self._wet_audio = None
 
@@ -519,9 +555,11 @@ class AuralizationExperiment:
         Steps applied in order:
 
         1. Remove DC offset.
-        2. Trim near-silent tail (optional).
-        3. Resample to match ``sample_rate`` (if needed).
-        4. Normalise by RMS energy (optional).
+        2. Deconvolve source wavelet (optional).
+        3. Align to first significant arrival (optional).
+        4. Trim near-silent tail (optional).
+        5. Resample to match ``sample_rate`` (if needed).
+        6. Normalise by RMS energy (optional).
 
         Returns
         -------
@@ -533,21 +571,37 @@ class AuralizationExperiment:
         # 1. Remove DC offset
         ir = ir - np.mean(ir)
 
-        # 2. Trim near-silent tail
+        # 2. Deconvolve source wavelet (at simulation rate, before any resampling)
+        if self.deconvolve_ir:
+            if self.source_signal is None:
+                raise ValueError(
+                    "source_signal must be provided when deconvolve_ir=True"
+                )
+            ir = deconvolve_source(ir, self.source_signal, reg=self.deconvolution_reg)
+
+        # 3. Align to first significant arrival (before resampling)
+        if self.align_ir:
+            first = find_first_arrival(np.abs(ir), threshold_ratio=self.alignment_threshold)
+            pre = int(round(self.pre_delay_ms * 1e-3 * self.ir_sample_rate))
+            start = max(0, first - pre)
+            ir = ir[start:]
+            self.ir_trim_time = start / self.ir_sample_rate
+
+        # 3. Trim near-silent tail
         if self.trim_ir:
             peak = np.max(np.abs(ir))
             if peak > 0:
-                threshold = 1e-4 * peak
+                threshold = 1e-5 * peak
                 nonzero = np.where(np.abs(ir) > threshold)[0]
                 if len(nonzero) > 0:
                     ir = ir[: nonzero[-1] + 1]
 
-        # 3. Resample to audio sample rate
+        # 4. Resample to audio sample rate
         if not np.isclose(self.ir_sample_rate, self.sample_rate, rtol=1e-3):
-            ratio = Fraction(self.sample_rate, int(self.ir_sample_rate)).limit_denominator(500)
+            ratio = Fraction(self.sample_rate, int(round(self.ir_sample_rate))).limit_denominator(1000)
             ir = resample_poly(ir, ratio.numerator, ratio.denominator)
 
-        # 4. Normalise by RMS energy
+        # 5. Normalise by RMS energy
         if self.normalize_ir:
             ir = ir / (np.sqrt(np.sum(ir ** 2)) + 1e-12)
 
@@ -567,7 +621,11 @@ class AuralizationExperiment:
             self.prepare_ir()
 
         wet = fftconvolve(self.dry_audio, self._ir_processed, mode="full")
-        wet = wet / (np.max(np.abs(wet)) + 1e-12)
+
+        # Avoid clipping without always forcing peak to 1
+        peak = np.max(np.abs(wet)) + 1e-12
+        if peak > 0.99:
+            wet = 0.99 * wet / peak
 
         self._wet_audio = wet
         return wet
@@ -633,3 +691,41 @@ class AuralizationExperiment:
 
         plt.tight_layout()
         plt.show()
+
+def deconvolve_source(recorded, source_signal, reg=1e-4):
+    """
+    Estimate the room impulse response by deconvolving the source wavelet.
+
+    Uses Wiener / regularised spectral division:
+
+        H(f) = Y(f) S*(f) / (|S(f)|² + reg · max|S(f)|²)
+
+    Parameters
+    ----------
+    recorded : np.ndarray
+        Listener recording at the simulation sample rate.
+    source_signal : np.ndarray
+        Source excitation signal at the same sample rate.
+    reg : float, default 1e-4
+        Regularisation factor to prevent division by near-zero.
+
+    Returns
+    -------
+    h : np.ndarray
+        Estimated room impulse response, same length as ``recorded``.
+    """
+    recorded = np.asarray(recorded, dtype=float)
+    source_signal = np.asarray(source_signal, dtype=float)
+
+    n_fft = int(2 ** np.ceil(np.log2(len(recorded) + len(source_signal) - 1)))
+
+    Y = np.fft.rfft(recorded, n=n_fft)
+    S = np.fft.rfft(source_signal, n=n_fft)
+
+    denom = np.abs(S) ** 2
+    eps = reg * (np.max(denom) + 1e-12)
+
+    H = Y * np.conj(S) / (denom + eps)
+    h = np.fft.irfft(H, n=n_fft)
+
+    return h[:len(recorded)]
